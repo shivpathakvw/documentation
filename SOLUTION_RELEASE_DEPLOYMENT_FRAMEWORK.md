@@ -1,0 +1,2887 @@
+---
+title: Solution Release & Deployment Framework
+owner: Visionwaves Engineering
+status: Active
+version: 1.0
+date: 2025-11-09
+classification: Internal/Customer-Shareable
+---
+
+<div style="page-break-after: always;"></div>
+
+# Table of Contents
+
+1. [Executive Summary](#1-executive-summary)
+2. [Purpose & Scope](#2-purpose--scope)
+3. [Key Concepts & Terminology](#3-key-concepts--terminology)
+4. [Architecture Overview](#4-architecture-overview)
+5. [Repository Structure & Git Strategy](#5-repository-structure--git-strategy)
+6. [Data Model & Database Schema](#6-data-model--database-schema)
+7. [Release Workflow](#7-release-workflow)
+8. [Roles & Responsibilities](#8-roles--responsibilities)
+9. [Standard Operating Procedures (SOP)](#9-standard-operating-procedures-sop)
+10. [CI/CD Pipeline Integration](#10-cicd-pipeline-integration)
+11. [Configuration Release Unit (CRU) Management](#11-configuration-release-unit-cru-management)
+12. [Deployment Promotion Strategy](#12-deployment-promotion-strategy)
+13. [Monitoring & Reporting](#13-monitoring--reporting)
+14. [Naming Conventions & Standards](#14-naming-conventions--standards)
+15. [Rollback & Recovery Procedures](#15-rollback--recovery-procedures)
+16. [Appendices](#16-appendices)
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 1. Executive Summary
+
+This document establishes the **Solution Release Management Framework** for Visionwaves products and customer deployments. It provides a structured approach to:
+
+- **Bundle multiple microservices** into cohesive solution releases
+- **Manage customer-specific customizations** alongside product releases
+- **Deploy unified configurations** through Configuration Release Units (CRU)
+- **Track and audit** all deployments across environments
+- **Enable safe promotion** from SIT → PreProd → Production
+
+### Key Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| ✅ **Single Source of Truth** | Database-driven tracking of what's deployed where |
+| ✅ **Atomic Deployments** | Deploy multiple services as one cohesive unit |
+| ✅ **Clear Separation** | Distinct product vs. customer-specific code |
+| ✅ **Automated Tracking** | Deployment history and audit trails |
+| ✅ **Safe Promotion** | Controlled progression through environments |
+| ✅ **Simplified Rollback** | Quick recovery to previous stable releases |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 2. Purpose & Scope
+
+### 2.1 Purpose
+
+This framework defines how **product owners**, **release managers**, and **DevOps engineers** collaborate to:
+
+1. Create solution releases containing multiple product microservices
+2. Package customer-specific customizations
+3. Deploy unified configurations via CRU tags
+4. Promote releases across environments safely
+5. Maintain deployment history and audit trails
+
+### 2.2 Scope
+
+**In Scope:**
+- ✅ Solution release creation and management
+- ✅ Component (microservice) versioning and tracking
+- ✅ Configuration management via CRU
+- ✅ Deployment automation and promotion
+- ✅ Environment-specific deployment tracking
+- ✅ Rollback and recovery procedures
+
+**Out of Scope:**
+- ❌ Individual developer workflows
+- ❌ Code review processes (covered in separate documents)
+- ❌ Testing strategies (covered in QA documentation)
+- ❌ Infrastructure provisioning
+- ❌ Disaster recovery procedures
+
+### 2.3 Target Audience
+
+| Role | How to Use This Document |
+|------|--------------------------|
+| **Release Managers** | Sections 7, 9, 11 - Creating and managing releases |
+| **Product Owners** | Sections 7, 9 - Adding components to releases |
+| **DevOps Engineers** | Sections 10, 12, 15 - Deployment and promotion |
+| **Developers** | Sections 3, 5, 11 - Understanding CRU and versioning |
+| **Management** | Sections 1, 4, 8 - Overview and responsibilities |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 3. Key Concepts & Terminology
+
+### 3.1 Core Definitions
+
+| Term | Definition | Example |
+|------|------------|---------|
+| **Product** | A standalone microservice or module maintained by Visionwaves | `product-lcm`, `product-identity`, `product-scheduler` |
+| **Customer Product Repo** | A forked/customized version of a product for a specific customer | `customer-acme-lcm` |
+| **Solution** | A logical bundle of multiple products deployed together | `HumainOS-Core`, `HumainOS-Extended` |
+| **Solution Release** | A versioned snapshot of a solution for a customer | `SL-ACME-006` |
+| **Component** | A single microservice within a solution | `lcm`, `identity`, `scheduler` |
+| **Component Release** | Metadata defining how a component is built and deployed | Repo URL, branch/tag, Docker image, Helm chart |
+| **CRU (Configuration Release Unit)** | A single tag grouping all UI/workflow/grid configurations | `CUST-ACME-R07` |
+| **Deployments Repo** | Git repository with environment branches pointing to solution releases | `deployments/cust/ACME/sit` |
+| **Product Version** | Base Visionwaves product version | `1.12.3` |
+| **Customer Version** | Customer-specific version including customizations | `2.3.0` |
+
+### 3.2 Version Hierarchy
+
+```
+Solution Release: SL-ACME-006
+├── Product Version: 1.12.3 (base Visionwaves release)
+├── Customer Version: 2.3.0 (includes customizations)
+├── CRU Tag: CUST-ACME-R07 (configuration bundle)
+└── Components:
+    ├── lcm: 2.3.0-CUST-ACME-R07
+    ├── identity: 2.3.0-CUST-ACME-R07
+    └── scheduler: 2.3.0-CUST-ACME-R07
+```
+
+### 3.3 Release Status Lifecycle
+
+```
+DRAFT ──────► READY ──────► LOCKED ──────► ARCHIVED
+  │             │              │               │
+  │             │              │               │
+  ▼             ▼              ▼               ▼
+Being         Ready for      Deployed to     Deprecated
+prepared      deployment     production      & retired
+```
+
+**Status Definitions:**
+
+| Status | Meaning | Can Modify? | Typical Duration |
+|--------|---------|-------------|------------------|
+| `DRAFT` | Release is being prepared | ✅ Yes | 1-3 days |
+| `READY` | Complete and ready for deployment | ⚠️ Limited | Until deployed |
+| `LOCKED` | Deployed to production | ❌ No | Active release |
+| `ARCHIVED` | Deprecated and no longer in use | ❌ No | Historical |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 4. Architecture Overview
+
+### 4.1 High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    SOLUTION RELEASE                         │
+│                     SL-ACME-006                             │
+│                                                             │
+│  Product Version: 1.12.3                                    │
+│  Customer Version: 2.3.0                                    │
+│  CRU Tag: CUST-ACME-R07                                     │
+└─────────────────────────────────────────────────────────────┘
+                            │
+        ┌───────────────────┼───────────────────┐
+        ▼                   ▼                   ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────┐
+│  Component 1  │   │  Component 2  │   │  Component 3  │
+│     LCM       │   │   Identity    │   │  Scheduler    │
+├───────────────┤   ├───────────────┤   ├───────────────┤
+│ Repo: cust-   │   │ Repo: product-│   │ Repo: product-│
+│ acme-lcm      │   │ identity      │   │ scheduler     │
+│ Tag: lcm-     │   │ Tag: v1.9.1   │   │ Tag: v1.7.2   │
+│ acme-2.3.0    │   │               │   │               │
+│ Image: lcm:   │   │ Image:        │   │ Image:        │
+│ 2.3.0-CUST-   │   │ identity:     │   │ scheduler:    │
+│ ACME-R07      │   │ 2.3.0-CUST-   │   │ 2.3.0-CUST-   │
+│               │   │ ACME-R07      │   │ ACME-R07      │
+└───────────────┘   └───────────────┘   └───────────────┘
+```
+
+### 4.2 Deployment Flow
+
+```
+┌──────────────┐
+│ Release      │  1. Creates Solution Release (DRAFT)
+│ Manager      │  2. Assigns CRU Tag
+└──────┬───────┘  3. Sets status to READY
+       │
+       ▼
+┌──────────────┐
+│ Product      │  4. Add Component Release entries
+│ Owners       │  5. Specify repos, tags, images, charts
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ DevOps       │  6. Update deployments repo (PR)
+│ Engineer     │  7. Merge to environment branch
+└──────┬───────┘
+       │
+       ▼
+┌──────────────┐
+│ CI/CD        │  8. Read release.yaml
+│ Pipeline     │  9. Deploy all components
+└──────┬───────┘ 10. Apply CRU configurations
+       │         11. Run smoke tests
+       ▼
+┌──────────────┐
+│ Environment  │ 12. Record deployment in env_deploy
+│ (SIT/Preprod │ 13. Update status (SUCCESS/FAILED)
+│ /Prod)       │
+└──────────────┘
+```
+
+### 4.3 System Components
+
+| Component | Purpose | Technology |
+|-----------|---------|------------|
+| **Solution Release DB** | Stores release metadata | PostgreSQL/MySQL |
+| **Deployments Repo** | Git-based deployment pointers | Git |
+| **Product Repos** | Source code for Visionwaves products | Git |
+| **Customer Repos** | Customer-specific customizations | Git |
+| **Docker Registry** | Container image storage | Docker Registry / Harbor |
+| **Helm Charts** | Kubernetes deployment templates | Helm 3 |
+| **CI/CD Pipeline** | Automated deployment orchestration | Jenkins / GitLab CI |
+| **Kubernetes Clusters** | Runtime environments (SIT/PreProd/Prod) | Kubernetes |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 5. Repository Structure & Git Strategy
+
+### 5.1 Repository Types
+
+#### Product Repositories (Visionwaves-owned)
+
+```
+product-lcm/
+product-identity/
+product-scheduler/
+product-workflow/
+product-notification/
+product-reporting/
+```
+
+**Characteristics:**
+- Maintained by Visionwaves product teams
+- Contains base product functionality
+- Versioned with semantic versioning (e.g., `v1.9.1`)
+- Shared across all customers
+
+#### Customer Product Repositories (Customer-specific)
+
+```
+customer-acme-lcm/
+customer-acme-identity/
+customer-beta-lcm/
+customer-gamma-workflow/
+```
+
+**Characteristics:**
+- Forked from product repos
+- Contains customer-specific customizations
+- Versioned with customer-specific tags (e.g., `lcm-acme-2.3.0`)
+- Isolated per customer
+
+#### Deployments Repository
+
+```
+deployments/
+├── cust/
+│   ├── ACME/
+│   │   ├── sit/
+│   │   │   └── release.yaml
+│   │   ├── preprod/
+│   │   │   └── release.yaml
+│   │   └── prod/
+│   │       └── release.yaml
+│   ├── BETA/
+│   │   ├── sit/
+│   │   ├── preprod/
+│   │   └── prod/
+│   └── GAMMA/
+│       ├── sit/
+│       ├── preprod/
+│       └── prod/
+├── helm/
+│   ├── charts/
+│   │   ├── lcm/
+│   │   │   ├── Chart.yaml
+│   │   │   ├── values.yaml
+│   │   │   └── templates/
+│   │   ├── identity/
+│   │   ├── scheduler/
+│   │   └── workflow/
+│   └── values/
+│       ├── ACME/
+│       │   ├── sit/
+│       │   │   ├── lcm.values.yaml
+│       │   │   ├── identity.values.yaml
+│       │   │   └── scheduler.values.yaml
+│       │   ├── preprod/
+│       │   └── prod/
+│       ├── BETA/
+│       └── GAMMA/
+├── scripts/
+│   ├── deploy.sh
+│   ├── rollback.sh
+│   └── validate.sh
+└── README.md
+```
+
+**Characteristics:**
+- Single source of truth for deployments
+- Environment-specific branches
+- Contains Helm charts and values files
+- Deployment scripts and automation
+
+### 5.2 Branching Strategy
+
+#### Product Repos
+
+```
+main ──────────────────────────────────────►
+  │
+  ├── release/v1.12.x ──────────────────────►
+  │     │
+  │     └── v1.12.3 (tag)
+  │
+  ├── release/v1.13.x ──────────────────────►
+  │
+  └── feature/new-feature ──────────────────►
+```
+
+- `main` - Latest stable product code
+- `release/v1.12.x` - Release branches for maintenance
+- `feature/*` - Feature development branches
+- Tags: `v1.12.3`, `v1.13.0`, etc.
+
+#### Customer Repos
+
+```
+main ──────────────────────────────────────►
+  │
+  ├── lcm-acme-2.3.0 (branch) ──────────────►
+  │     │
+  │     └── lcm-acme-2.3.0 (tag)
+  │
+  └── lcm-acme-2.4.0 (branch) ──────────────►
+```
+
+- `main` - Customer-specific main branch
+- `<product>-<tenant>-<version>` - Customer release branches
+- Tags: `lcm-acme-2.3.0`, `identity-beta-1.5.2`, etc.
+
+#### Deployments Repo
+
+```
+cust/ACME/sit ──────────────────────────────►
+cust/ACME/preprod ──────────────────────────►
+cust/ACME/prod ──────────────────────────────►
+```
+
+- `cust/<CUSTOMER>/sit` - SIT environment pointer
+- `cust/<CUSTOMER>/preprod` - PreProd environment pointer
+- `cust/<CUSTOMER>/prod` - Production environment pointer
+
+### 5.3 Release Pointer File (release.yaml)
+
+**Location:** `deployments/cust/ACME/sit/release.yaml`
+
+```yaml
+# Solution Release Pointer
+# This file defines which solution release is deployed in this environment
+# Modify this file and merge to trigger deployment
+
+solutionRelease: "SL-ACME-006"
+environment: "sit"
+
+# Metadata (auto-updated by CI/CD)
+deployedAt: "2025-11-09T10:30:00Z"
+deployedBy: "devops-user@visionwaves.com"
+pipelineJobId: "deploy-acme-sit-#142"
+```
+
+**Important Rules:**
+- ✅ This is the **ONLY** file modified during deployment promotion
+- ✅ Changes must go through Pull Request process
+- ✅ CI/CD pipeline automatically triggers on merge
+- ✅ Metadata fields are auto-updated by pipeline
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 6. Data Model & Database Schema
+
+### 6.1 Entity Relationship Diagram
+
+```
+┌─────────────────────────┐
+│   solution_release      │
+│─────────────────────────│
+│ id (PK)                 │
+│ solution_key            │
+│ release_tag (UNIQUE)    │◄─────┐
+│ customer                │      │
+│ cru_tag                 │      │
+│ product_version         │      │
+│ customer_version        │      │
+│ status                  │      │
+│ created_at              │      │
+│ created_by              │      │
+└─────────────────────────┘      │
+            │                    │
+            │ 1:N                │
+            ▼                    │
+┌─────────────────────────┐      │
+│   component_release     │      │
+│─────────────────────────│      │
+│ id (PK)                 │      │
+│ solution_release_id (FK)│──────┘
+│ component_key           │
+│ is_customized           │
+│ code_repo_url           │
+│ code_ref_type           │
+│ code_ref_value          │
+│ code_commit_sha         │
+│ image_uri               │
+│ deploy_repo_url         │
+│ deploy_ref_type         │
+│ deploy_ref_value        │
+│ helm_chart_path         │
+│ helm_values_path        │
+│ helm_release_name       │
+└─────────────────────────┘
+            ▲
+            │
+            │ N:1
+            │
+┌─────────────────────────┐
+│      env_deploy         │
+│─────────────────────────│
+│ id (PK)                 │
+│ solution_release_id (FK)│
+│ customer                │
+│ environment             │
+│ status                  │
+│ deploy_repo_branch      │
+│ release_yaml_commit     │
+│ started_at              │
+│ finished_at             │
+│ deployed_by             │
+│ notes                   │
+└─────────────────────────┘
+```
+
+
+### 6.2 Table Definitions
+
+#### Table 1: `solution_release`
+
+**Purpose:** Parent record representing one complete solution release for a customer.
+
+```sql
+CREATE TABLE solution_release (
+  id BIGSERIAL PRIMARY KEY,
+  solution_key VARCHAR(100) NOT NULL,
+  release_tag VARCHAR(50) UNIQUE NOT NULL,
+  customer VARCHAR(100) NOT NULL,
+  cru_tag VARCHAR(50) NOT NULL,
+  product_version VARCHAR(20) NOT NULL,
+  customer_version VARCHAR(20) NOT NULL,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('DRAFT', 'READY', 'LOCKED', 'ARCHIVED')),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_by VARCHAR(100),
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_by VARCHAR(100),
+  notes TEXT,
+  
+  INDEX idx_customer (customer),
+  INDEX idx_release_tag (release_tag),
+  INDEX idx_status (status),
+  INDEX idx_cru_tag (cru_tag)
+);
+```
+
+**Field Descriptions:**
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `id` | BIGSERIAL | Primary key | `1` |
+| `solution_key` | VARCHAR(100) | Logical solution name | `HumainOS-Core` |
+| `release_tag` | VARCHAR(50) | Unique release identifier | `SL-ACME-006` |
+| `customer` | VARCHAR(100) | Customer/tenant name | `ACME` |
+| `cru_tag` | VARCHAR(50) | Configuration Release Unit tag | `CUST-ACME-R07` |
+| `product_version` | VARCHAR(20) | Base Visionwaves version | `1.12.3` |
+| `customer_version` | VARCHAR(20) | Customer-specific version | `2.3.0` |
+| `status` | VARCHAR(20) | Release status | `DRAFT`, `READY`, `LOCKED`, `ARCHIVED` |
+| `created_at` | TIMESTAMP | Creation timestamp | `2025-11-09 10:00:00` |
+| `created_by` | VARCHAR(100) | User who created the release | `rm@visionwaves.com` |
+| `notes` | TEXT | Release notes and comments | `Initial release for Q4 2025` |
+
+#### Table 2: `component_release`
+
+**Purpose:** Defines each microservice component within a solution release.
+
+```sql
+CREATE TABLE component_release (
+  id BIGSERIAL PRIMARY KEY,
+  solution_release_id BIGINT NOT NULL REFERENCES solution_release(id) ON DELETE CASCADE,
+  component_key VARCHAR(100) NOT NULL,
+  is_customized BOOLEAN NOT NULL DEFAULT FALSE,
+  
+  -- Source Code Information
+  code_repo_url VARCHAR(500) NOT NULL,
+  code_ref_type VARCHAR(20) NOT NULL CHECK (code_ref_type IN ('branch', 'tag', 'commit')),
+  code_ref_value VARCHAR(200) NOT NULL,
+  code_commit_sha VARCHAR(64),
+  
+  -- Docker Image Information
+  image_uri VARCHAR(500) NOT NULL,
+  image_digest VARCHAR(100),
+  
+  -- Deployment Information
+  deploy_repo_url VARCHAR(500) NOT NULL,
+  deploy_ref_type VARCHAR(20) NOT NULL CHECK (deploy_ref_type IN ('branch', 'tag')),
+  deploy_ref_value VARCHAR(200) NOT NULL,
+  helm_chart_path VARCHAR(500) NOT NULL,
+  helm_values_path VARCHAR(500) NOT NULL,
+  helm_release_name VARCHAR(100),
+  
+  -- Metadata
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_by VARCHAR(100),
+  
+  UNIQUE(solution_release_id, component_key),
+  INDEX idx_component_key (component_key),
+  INDEX idx_solution_release (solution_release_id),
+  INDEX idx_is_customized (is_customized)
+);
+```
+
+**Field Descriptions:**
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `component_key` | VARCHAR(100) | Unique component identifier | `lcm`, `identity`, `scheduler` |
+| `is_customized` | BOOLEAN | Whether this is a customer-specific version | `true` for `customer-acme-lcm` |
+| `code_repo_url` | VARCHAR(500) | Git repository URL | `https://github.com/visionwaves/customer-acme-lcm` |
+| `code_ref_type` | VARCHAR(20) | Type of git reference | `branch`, `tag`, `commit` |
+| `code_ref_value` | VARCHAR(200) | Git reference value | `lcm-acme-2.3.0` or `v1.9.1` |
+| `code_commit_sha` | VARCHAR(64) | Full commit SHA for traceability | `a1b2c3d4e5f6...` |
+| `image_uri` | VARCHAR(500) | Docker image URI | `registry.visionwaves.com/lcm:2.3.0-CUST-ACME-R07` |
+| `image_digest` | VARCHAR(100) | Docker image SHA256 digest | `sha256:abc123...` |
+| `helm_chart_path` | VARCHAR(500) | Path to Helm chart in deploy repo | `helm/charts/lcm` |
+| `helm_values_path` | VARCHAR(500) | Path to values file | `helm/values/ACME/sit/lcm.values.yaml` |
+| `helm_release_name` | VARCHAR(100) | Helm release name in K8s | `acme-lcm` |
+
+#### Table 3: `env_deploy`
+
+**Purpose:** Tracks deployment history and status for each environment.
+
+```sql
+CREATE TABLE env_deploy (
+  id BIGSERIAL PRIMARY KEY,
+  solution_release_id BIGINT NOT NULL REFERENCES solution_release(id),
+  customer VARCHAR(100) NOT NULL,
+  environment VARCHAR(20) NOT NULL CHECK (environment IN ('sit', 'preprod', 'prod')),
+  status VARCHAR(20) NOT NULL CHECK (status IN ('IN_PROGRESS', 'SUCCESS', 'FAILED', 'ROLLED_BACK')),
+  
+  -- Deployment Metadata
+  deploy_repo_branch VARCHAR(200) NOT NULL,
+  release_yaml_commit VARCHAR(64),
+  pipeline_job_id VARCHAR(100),
+  pipeline_url VARCHAR(500),
+  
+  -- Timing
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  finished_at TIMESTAMP,
+  duration_seconds INTEGER,
+  
+  -- User & Notes
+  deployed_by VARCHAR(100),
+  notes TEXT,
+  error_message TEXT,
+  
+  INDEX idx_customer_env (customer, environment),
+  INDEX idx_solution_release (solution_release_id),
+  INDEX idx_status (status),
+  INDEX idx_started_at (started_at DESC)
+);
+```
+
+**Field Descriptions:**
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `environment` | VARCHAR(20) | Target environment | `sit`, `preprod`, `prod` |
+| `status` | VARCHAR(20) | Deployment status | `IN_PROGRESS`, `SUCCESS`, `FAILED`, `ROLLED_BACK` |
+| `deploy_repo_branch` | VARCHAR(200) | Deployments repo branch | `cust/ACME/sit` |
+| `release_yaml_commit` | VARCHAR(64) | Commit SHA of release.yaml | `x1y2z3...` |
+| `pipeline_job_id` | VARCHAR(100) | Jenkins/CI job ID | `deploy-acme-sit-#142` |
+| `pipeline_url` | VARCHAR(500) | Link to CI/CD job | `https://jenkins.visionwaves.com/job/142` |
+| `deployed_by` | VARCHAR(100) | User who triggered deployment | `devops@visionwaves.com` |
+| `duration_seconds` | INTEGER | Deployment duration | `420` (7 minutes) |
+
+### 6.3 Sample Data
+
+#### Example: `solution_release` Record
+
+```sql
+INSERT INTO solution_release (
+  solution_key, release_tag, customer, cru_tag, 
+  product_version, customer_version, status, created_by, notes
+) VALUES (
+  'HumainOS-Core', 
+  'SL-ACME-006', 
+  'ACME', 
+  'CUST-ACME-R07',
+  '1.12.3', 
+  '2.3.0', 
+  'READY', 
+  'release.manager@visionwaves.com',
+  'Q4 2025 release with new workflow engine and enhanced reporting'
+);
+```
+
+#### Example: `component_release` Records
+
+```sql
+-- LCM Component (Customized)
+INSERT INTO component_release (
+  solution_release_id, component_key, is_customized,
+  code_repo_url, code_ref_type, code_ref_value, code_commit_sha,
+  image_uri, image_digest,
+  deploy_repo_url, deploy_ref_type, deploy_ref_value,
+  helm_chart_path, helm_values_path, helm_release_name,
+  created_by
+) VALUES (
+  1, 'lcm', true,
+  'https://github.com/visionwaves/customer-acme-lcm', 'tag', 'lcm-acme-2.3.0', 'a1b2c3d4e5f6...',
+  'registry.visionwaves.com/lcm:2.3.0-CUST-ACME-R07', 'sha256:abc123...',
+  'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit',
+  'helm/charts/lcm', 'helm/values/ACME/sit/lcm.values.yaml', 'acme-lcm',
+  'lcm.owner@visionwaves.com'
+);
+
+-- Identity Component (Product - Not Customized)
+INSERT INTO component_release (
+  solution_release_id, component_key, is_customized,
+  code_repo_url, code_ref_type, code_ref_value, code_commit_sha,
+  image_uri, image_digest,
+  deploy_repo_url, deploy_ref_type, deploy_ref_value,
+  helm_chart_path, helm_values_path, helm_release_name,
+  created_by
+) VALUES (
+  1, 'identity', false,
+  'https://github.com/visionwaves/product-identity', 'tag', 'v1.9.1', 'e5f6g7h8i9j0...',
+  'registry.visionwaves.com/identity:2.3.0-CUST-ACME-R07', 'sha256:def456...',
+  'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit',
+  'helm/charts/identity', 'helm/values/ACME/sit/identity.values.yaml', 'acme-identity',
+  'identity.owner@visionwaves.com'
+);
+
+-- Scheduler Component (Product - Not Customized)
+INSERT INTO component_release (
+  solution_release_id, component_key, is_customized,
+  code_repo_url, code_ref_type, code_ref_value, code_commit_sha,
+  image_uri, image_digest,
+  deploy_repo_url, deploy_ref_type, deploy_ref_value,
+  helm_chart_path, helm_values_path, helm_release_name,
+  created_by
+) VALUES (
+  1, 'scheduler', false,
+  'https://github.com/visionwaves/product-scheduler', 'tag', 'v1.7.2', 'k1l2m3n4o5p6...',
+  'registry.visionwaves.com/scheduler:2.3.0-CUST-ACME-R07', 'sha256:ghi789...',
+  'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit',
+  'helm/charts/scheduler', 'helm/values/ACME/sit/scheduler.values.yaml', 'acme-scheduler',
+  'scheduler.owner@visionwaves.com'
+);
+```
+
+#### Example: `env_deploy` Record
+
+```sql
+INSERT INTO env_deploy (
+  solution_release_id, customer, environment, status,
+  deploy_repo_branch, release_yaml_commit, pipeline_job_id, pipeline_url,
+  deployed_by, duration_seconds, notes
+) VALUES (
+  1, 'ACME', 'sit', 'SUCCESS',
+  'cust/ACME/sit', 'x1y2z3a4b5c6...', 'deploy-acme-sit-#142',
+  'https://jenkins.visionwaves.com/job/deploy-acme-sit/142',
+  'devops@visionwaves.com', 420,
+  'Initial SIT deployment of SL-ACME-006. All components deployed successfully. Smoke tests passed.'
+);
+```
+
+### 6.4 Useful SQL Queries
+
+#### Query 1: Get All Components in a Solution Release
+
+```sql
+SELECT 
+  sr.release_tag,
+  sr.customer,
+  sr.cru_tag,
+  cr.component_key,
+  cr.is_customized,
+  cr.code_ref_value AS code_version,
+  cr.image_uri
+FROM solution_release sr
+JOIN component_release cr ON sr.id = cr.solution_release_id
+WHERE sr.release_tag = 'SL-ACME-006'
+ORDER BY cr.component_key;
+```
+
+#### Query 2: Get Latest Deployment Per Environment
+
+```sql
+SELECT DISTINCT ON (customer, environment)
+  customer,
+  environment,
+  sr.release_tag,
+  ed.status,
+  ed.started_at,
+  ed.deployed_by
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+WHERE customer = 'ACME'
+ORDER BY customer, environment, started_at DESC;
+```
+
+#### Query 3: Get Deployment History for a Customer
+
+```sql
+SELECT 
+  sr.release_tag,
+  ed.environment,
+  ed.status,
+  ed.started_at,
+  ed.finished_at,
+  ed.duration_seconds,
+  ed.deployed_by
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+WHERE ed.customer = 'ACME'
+ORDER BY ed.started_at DESC
+LIMIT 20;
+```
+
+#### Query 4: Find All Customized Components Across Customers
+
+```sql
+SELECT 
+  sr.customer,
+  sr.release_tag,
+  cr.component_key,
+  cr.code_repo_url,
+  cr.code_ref_value
+FROM component_release cr
+JOIN solution_release sr ON cr.solution_release_id = sr.id
+WHERE cr.is_customized = true
+ORDER BY sr.customer, cr.component_key;
+```
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 7. Release Workflow
+
+### 7.1 Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    RELEASE CREATION PHASE                       │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+        ┌───────────────────────────────────────┐
+        │ 1. Release Manager Creates            │
+        │    Solution Release (DRAFT)           │
+        │    - Assigns release tag              │
+        │    - Assigns CRU tag                  │
+        │    - Sets product/customer versions   │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 2. Product Owners Add Components      │
+        │    - Specify repos, branches/tags     │
+        │    - Provide Docker image URIs        │
+        │    - Define Helm chart paths          │
+        │    - Set values file locations        │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 3. Release Manager Reviews            │
+        │    - Validates all components         │
+        │    - Checks CRU configuration         │
+        │    - Sets status to READY             │
+        └───────────────┬───────────────────────┘
+                        │
+┌─────────────────────────────────────────────────────────────────┐
+│                    DEPLOYMENT PHASE                             │
+└─────────────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 4. DevOps Updates Deployments Repo    │
+        │    - Edit release.yaml in env branch  │
+        │    - Update solutionRelease pointer   │
+        │    - Create Pull Request              │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 5. PR Review & Approval               │
+        │    - Peer review changes              │
+        │    - Verify release tag               │
+        │    - Merge to environment branch      │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 6. CI/CD Pipeline Triggered           │
+        │    - Read release.yaml                │
+        │    - Query solution_release table     │
+        │    - Load component_release entries   │
+        │    - Create env_deploy record         │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 7. Deploy Each Component              │
+        │    - Checkout deploy repo             │
+        │    - Run Helm install/upgrade         │
+        │    - Apply CRU configurations         │
+        │    - Verify pod health                │
+        └───────────────┬───────────────────────┘
+                        │
+                        ▼
+        ┌───────────────────────────────────────┐
+        │ 8. Post-Deployment                    │
+        │    - Run smoke tests                  │
+        │    - Update env_deploy status         │
+        │    - Send notifications               │
+        │    - Generate deployment report       │
+        └───────────────────────────────────────┘
+```
+
+### 7.2 State Transitions
+
+**Solution Release Status:**
+
+```
+DRAFT ──────────────► READY ──────────────► LOCKED ──────────────► ARCHIVED
+  │                     │                      │                       │
+  │ RM creates          │ RM approves          │ Deployed to prod      │ Deprecated
+  │ Components added    │ All components set   │ No modifications      │ No longer used
+  │ Can be modified     │ Ready for deploy     │ Read-only             │ Historical
+  └─────────────────────┴──────────────────────┴───────────────────────┘
+```
+
+**Deployment Status:**
+
+```
+IN_PROGRESS ──────────► SUCCESS
+     │                     │
+     │                     └──► (Deployment complete, all tests passed)
+     │
+     ├──────────────────► FAILED
+     │                     │
+     │                     └──► (Deployment error, rollback may be needed)
+     │
+     └──────────────────► ROLLED_BACK
+                           │
+                           └──► (Rollback executed successfully)
+```
+
+
+### 7.3 Detailed Step-by-Step Process
+
+#### Step 1: Create Solution Release (Release Manager)
+
+**Action:** Create a new solution release record in `DRAFT` status.
+
+**Prerequisites:**
+- [ ] Product version finalized
+- [ ] Customer version determined
+- [ ] CRU tag created or identified
+- [ ] Release notes prepared
+
+**SQL:**
+```sql
+INSERT INTO solution_release (
+  solution_key, release_tag, customer, cru_tag,
+  product_version, customer_version, status, created_by, notes
+) VALUES (
+  'HumainOS-Core', 'SL-ACME-006', 'ACME', 'CUST-ACME-R07',
+  '1.12.3', '2.3.0', 'DRAFT', 'rm@visionwaves.com',
+  'Q4 2025 release with new workflow engine'
+);
+```
+
+**Checklist:**
+- [ ] Assign unique release tag following naming convention (`SL-<CUSTOMER>-<NNN>`)
+- [ ] Create new CRU tag or reuse existing (`CUST-<TENANT>-R<NN>`)
+- [ ] Set product version (base Visionwaves version)
+- [ ] Set customer version (includes customizations)
+- [ ] Add comprehensive release notes
+- [ ] Notify product owners to add components
+
+#### Step 2: Add Components (Product Owners)
+
+**Action:** Each product owner adds their component to the release.
+
+**Prerequisites:**
+- [ ] Code is tagged/branched in source repo
+- [ ] Docker image is built and pushed to registry
+- [ ] Helm chart exists in deployments repo
+- [ ] Values file is created for target environment
+- [ ] Component tested independently
+
+**SQL Example (LCM Product Owner):**
+```sql
+INSERT INTO component_release (
+  solution_release_id, component_key, is_customized,
+  code_repo_url, code_ref_type, code_ref_value, code_commit_sha,
+  image_uri, image_digest,
+  deploy_repo_url, deploy_ref_type, deploy_ref_value,
+  helm_chart_path, helm_values_path, helm_release_name,
+  created_by
+) VALUES (
+  (SELECT id FROM solution_release WHERE release_tag = 'SL-ACME-006'),
+  'lcm', true,
+  'https://github.com/visionwaves/customer-acme-lcm', 'tag', 'lcm-acme-2.3.0', 'a1b2c3d4...',
+  'registry.visionwaves.com/lcm:2.3.0-CUST-ACME-R07', 'sha256:abc123...',
+  'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit',
+  'helm/charts/lcm', 'helm/values/ACME/sit/lcm.values.yaml', 'acme-lcm',
+  'lcm.owner@visionwaves.com'
+);
+```
+
+**Checklist:**
+- [ ] Component code is tagged with correct version
+- [ ] Docker image includes CRU tag in version
+- [ ] Image digest (SHA256) is recorded
+- [ ] Helm chart path is correct
+- [ ] Values file path is environment-specific
+- [ ] Helm release name follows convention
+- [ ] Component dependencies are documented
+
+#### Step 3: Review and Approve (Release Manager)
+
+**Action:** Validate all components and mark release as READY.
+
+**Prerequisites:**
+- [ ] All components added by product owners
+- [ ] All Docker images available in registry
+- [ ] All Helm charts and values files exist
+- [ ] CRU configurations are complete
+- [ ] Integration testing completed
+
+**SQL:**
+```sql
+UPDATE solution_release
+SET status = 'READY',
+    updated_at = CURRENT_TIMESTAMP,
+    updated_by = 'rm@visionwaves.com'
+WHERE release_tag = 'SL-ACME-006';
+```
+
+**Validation Checklist:**
+- [ ] All expected components are present
+- [ ] No duplicate component keys
+- [ ] All image URIs are accessible
+- [ ] All Helm charts exist in deployments repo
+- [ ] CRU tag is consistent across all components
+- [ ] Release notes are complete
+- [ ] Stakeholders notified
+
+#### Step 4: Update Deployments Repo (DevOps)
+
+**Action:** Update release.yaml in target environment branch.
+
+**Prerequisites:**
+- [ ] Solution release status is READY
+- [ ] Target environment is available
+- [ ] Previous deployment is stable (if any)
+
+**Steps:**
+1. Clone deployments repo
+2. Checkout target environment branch
+3. Edit release.yaml
+4. Create Pull Request
+5. Get approval
+6. Merge to trigger deployment
+
+**Example:**
+```bash
+# Clone and checkout
+git clone https://github.com/visionwaves/deployments.git
+cd deployments
+git checkout cust/ACME/sit
+
+# Edit release.yaml
+cat > cust/ACME/sit/release.yaml << 'YAML'
+solutionRelease: "SL-ACME-006"
+environment: "sit"
+YAML
+
+# Commit and push
+git add cust/ACME/sit/release.yaml
+git commit -m "Deploy SL-ACME-006 to ACME SIT environment"
+git push origin cust/ACME/sit
+
+# Create PR (via GitHub/GitLab UI or CLI)
+```
+
+**Checklist:**
+- [ ] Correct environment branch selected
+- [ ] Release tag is valid and exists in database
+- [ ] PR description includes release notes
+- [ ] PR is reviewed by peer
+- [ ] Merge triggers CI/CD pipeline
+
+#### Step 5: CI/CD Deployment (Automated)
+
+**Action:** Pipeline deploys all components and applies CRU configurations.
+
+**Pipeline Steps:**
+1. Read release.yaml from merged branch
+2. Query database for solution release details
+3. Create env_deploy record with status IN_PROGRESS
+4. For each component:
+   - Checkout deployment repo
+   - Run Helm install/upgrade
+   - Verify pod health
+5. Apply CRU configurations
+6. Run smoke tests
+7. Update env_deploy status to SUCCESS or FAILED
+
+**See Section 10 for detailed CI/CD pipeline implementation.**
+
+#### Step 6: Post-Deployment Verification
+
+**Action:** Verify deployment success and update records.
+
+**Verification Steps:**
+- [ ] All pods are running and healthy
+- [ ] All services are accessible
+- [ ] Smoke tests passed
+- [ ] CRU configurations applied correctly
+- [ ] No errors in application logs
+- [ ] Monitoring dashboards show normal metrics
+
+**Notification:**
+- Send deployment success/failure notification
+- Update deployment tracking dashboard
+- Generate deployment report
+- Notify stakeholders
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 8. Roles & Responsibilities
+
+### 8.1 Role Matrix
+
+| Role | Responsibilities | Access Level | Key Activities |
+|------|------------------|--------------|----------------|
+| **Release Manager** | Owns the release process end-to-end | Full access to solution_release table | Create releases, assign CRU, approve releases, coordinate stakeholders |
+| **Product Owner** | Owns specific product components | Write access to component_release for their products | Add component metadata, ensure code is tagged, verify images |
+| **DevOps Engineer** | Executes deployments and manages infrastructure | Full access to deployments repo and CI/CD | Update release.yaml, trigger deployments, monitor pipelines, handle rollbacks |
+| **Developer** | Develops features and fixes | Read access to release data | Tag code with CRU, build images, update configurations |
+| **QA Engineer** | Tests releases before deployment | Read access to release data | Verify component versions, run integration tests, validate CRU configs |
+| **Customer Success** | Communicates with customers | Read access to deployment history | Inform customers of releases, coordinate deployment windows |
+
+### 8.2 Detailed Responsibilities
+
+#### Release Manager
+
+**Primary Responsibilities:**
+1. Create solution release records in database
+2. Assign CRU tags for configuration management
+3. Coordinate with product owners to add components
+4. Review and validate complete releases
+5. Change release status from DRAFT → READY
+6. Lock releases after production deployment
+7. Archive deprecated releases
+8. Maintain release documentation
+
+**Tools & Access:**
+- Database access (solution_release, component_release tables)
+- Release management dashboard
+- Communication tools (Slack, Email)
+
+**Success Metrics:**
+- On-time release delivery
+- Zero missing components in releases
+- Clear and complete release notes
+
+#### Product Owner
+
+**Primary Responsibilities:**
+1. Add component_release entries for their products
+2. Ensure code is properly tagged in git
+3. Verify Docker images are built and pushed
+4. Confirm Helm charts and values files exist
+5. Document component dependencies
+6. Coordinate with developers on component readiness
+7. Participate in release reviews
+
+**Tools & Access:**
+- Database access (component_release table - insert only)
+- Git repositories (product and customer repos)
+- Docker registry (read access)
+- Deployments repo (read access)
+
+**Success Metrics:**
+- Components added on time
+- Zero deployment failures due to missing artifacts
+- Accurate component metadata
+
+#### DevOps Engineer
+
+**Primary Responsibilities:**
+1. Update release.yaml in deployments repo
+2. Create and review Pull Requests for deployments
+3. Monitor CI/CD pipeline execution
+4. Troubleshoot deployment failures
+5. Execute rollbacks when necessary
+6. Maintain deployment infrastructure
+7. Update deployment documentation
+8. Manage environment-specific configurations
+
+**Tools & Access:**
+- Full access to deployments repo
+- CI/CD pipeline (Jenkins/GitLab CI)
+- Kubernetes clusters (all environments)
+- Monitoring and logging tools
+- Database access (env_deploy table)
+
+**Success Metrics:**
+- Deployment success rate > 95%
+- Mean time to deploy < 30 minutes
+- Mean time to recovery < 15 minutes
+
+#### Developer
+
+**Primary Responsibilities:**
+1. Develop features and bug fixes
+2. Tag code with appropriate CRU tags
+3. Ensure configurations are CRU-tagged
+4. Build and test Docker images locally
+5. Update Helm values files as needed
+6. Participate in code reviews
+7. Fix deployment issues related to their code
+
+**Tools & Access:**
+- Git repositories (read/write for assigned repos)
+- Docker registry (push access)
+- Development environment
+- Read access to release data
+
+**Success Metrics:**
+- Code quality and test coverage
+- Timely delivery of features
+- Zero critical bugs in production
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 9. Standard Operating Procedures (SOP)
+
+### 9.1 SOP Summary Table
+
+| Step | Who | Action | Duration | Dependencies |
+|------|-----|--------|----------|--------------|
+| 1 | Release Manager | Create solution release (DRAFT) | 15 min | Product/customer versions finalized |
+| 2 | Release Manager | Assign CRU tag | 5 min | CRU naming convention |
+| 3 | Product Owners | Add component entries | 30 min | Code tagged, images built |
+| 4 | Release Manager | Review and set to READY | 30 min | All components added |
+| 5 | DevOps | Update release.yaml (PR) | 15 min | Release is READY |
+| 6 | DevOps | Merge PR to env branch | 5 min | PR approved |
+| 7 | CI/CD | Deploy components | 20-30 min | Automated |
+| 8 | CI/CD | Apply CRU configurations | 5-10 min | Automated |
+| 9 | CI/CD | Run smoke tests | 10 min | Automated |
+| 10 | DevOps | Verify and close | 15 min | Deployment SUCCESS |
+
+**Total Time:** ~2-3 hours (from creation to deployment)
+
+### 9.2 SOP: Create New Solution Release
+
+**Objective:** Create a new solution release for a customer.
+
+**Frequency:** As needed (typically 1-2 times per month per customer)
+
+**Prerequisites:**
+- Product version is finalized and tested
+- Customer-specific customizations are complete
+- CRU tag is created or identified
+
+**Procedure:**
+
+1. **Determine Release Details**
+   - Identify solution key (e.g., `HumainOS-Core`)
+   - Determine customer (e.g., `ACME`)
+   - Assign release tag (e.g., `SL-ACME-006`)
+   - Identify or create CRU tag (e.g., `CUST-ACME-R07`)
+   - Set product version (e.g., `1.12.3`)
+   - Set customer version (e.g., `2.3.0`)
+
+2. **Create Database Record**
+   ```sql
+   INSERT INTO solution_release (
+     solution_key, release_tag, customer, cru_tag,
+     product_version, customer_version, status, created_by, notes
+   ) VALUES (
+     'HumainOS-Core', 'SL-ACME-006', 'ACME', 'CUST-ACME-R07',
+     '1.12.3', '2.3.0', 'DRAFT', 'rm@visionwaves.com',
+     'Q4 2025 release with new features...'
+   );
+   ```
+
+3. **Notify Product Owners**
+   - Send email/Slack message to all product owners
+   - Include release tag and CRU tag
+   - Set deadline for component additions
+   - Provide link to release documentation
+
+4. **Track Progress**
+   - Monitor component additions
+   - Follow up with product owners
+   - Verify all components are added
+
+5. **Review and Approve**
+   - Validate all components
+   - Check for completeness
+   - Update status to READY
+
+**Expected Outcome:** Solution release created and ready for deployment.
+
+**Rollback:** Delete release record if needed (only if status is DRAFT).
+
+### 9.3 SOP: Add Component to Release
+
+**Objective:** Add a microservice component to an existing solution release.
+
+**Frequency:** Once per component per release
+
+**Prerequisites:**
+- Solution release exists in DRAFT status
+- Code is tagged in git repository
+- Docker image is built and pushed
+- Helm chart and values files exist
+
+**Procedure:**
+
+1. **Gather Component Information**
+   - Component key (e.g., `lcm`)
+   - Is it customized? (true/false)
+   - Code repo URL
+   - Code ref type and value (tag/branch)
+   - Commit SHA
+   - Docker image URI and digest
+   - Helm chart path
+   - Helm values file path
+   - Helm release name
+
+2. **Verify Artifacts**
+   ```bash
+   # Verify git tag exists
+   git ls-remote --tags <repo-url> | grep <tag-name>
+   
+   # Verify Docker image exists
+   docker pull <image-uri>
+   
+   # Verify Helm chart exists
+   helm show chart <chart-path>
+   ```
+
+3. **Insert Component Record**
+   ```sql
+   INSERT INTO component_release (
+     solution_release_id, component_key, is_customized,
+     code_repo_url, code_ref_type, code_ref_value, code_commit_sha,
+     image_uri, image_digest,
+     deploy_repo_url, deploy_ref_type, deploy_ref_value,
+     helm_chart_path, helm_values_path, helm_release_name,
+     created_by
+   ) VALUES (
+     (SELECT id FROM solution_release WHERE release_tag = 'SL-ACME-006'),
+     'lcm', true,
+     'https://github.com/visionwaves/customer-acme-lcm', 'tag', 'lcm-acme-2.3.0', 'a1b2c3d4...',
+     'registry.visionwaves.com/lcm:2.3.0-CUST-ACME-R07', 'sha256:abc123...',
+     'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit',
+     'helm/charts/lcm', 'helm/values/ACME/sit/lcm.values.yaml', 'acme-lcm',
+     'lcm.owner@visionwaves.com'
+   );
+   ```
+
+4. **Verify Insertion**
+   ```sql
+   SELECT * FROM component_release 
+   WHERE solution_release_id = (SELECT id FROM solution_release WHERE release_tag = 'SL-ACME-006')
+   AND component_key = 'lcm';
+   ```
+
+5. **Notify Release Manager**
+   - Confirm component added
+   - Provide any special notes or dependencies
+
+**Expected Outcome:** Component successfully added to release.
+
+**Rollback:** Delete component record if incorrect.
+
+### 9.4 SOP: Deploy Solution Release
+
+**Objective:** Deploy a solution release to a target environment.
+
+**Frequency:** As needed (SIT: daily, PreProd: weekly, Prod: monthly)
+
+**Prerequisites:**
+- Solution release status is READY
+- Target environment is available
+- Deployment window is scheduled
+- Stakeholders are notified
+
+**Procedure:**
+
+1. **Prepare Deployment**
+   ```bash
+   # Clone deployments repo
+   git clone https://github.com/visionwaves/deployments.git
+   cd deployments
+   
+   # Checkout target environment branch
+   git checkout cust/ACME/sit
+   git pull origin cust/ACME/sit
+   ```
+
+2. **Update Release Pointer**
+   ```bash
+   # Edit release.yaml
+   cat > cust/ACME/sit/release.yaml << 'YAML'
+   solutionRelease: "SL-ACME-006"
+   environment: "sit"
+   YAML
+   
+   # Commit changes
+   git add cust/ACME/sit/release.yaml
+   git commit -m "Deploy SL-ACME-006 to ACME SIT
+   
+   Release Notes:
+   - New workflow engine
+   - Enhanced reporting
+   - Bug fixes
+   
+   Components:
+   - lcm: 2.3.0-CUST-ACME-R07
+   - identity: 2.3.0-CUST-ACME-R07
+   - scheduler: 2.3.0-CUST-ACME-R07
+   "
+   ```
+
+3. **Create Pull Request**
+   ```bash
+   # Push to remote
+   git push origin cust/ACME/sit
+   
+   # Create PR (via GitHub/GitLab UI or CLI)
+   # Title: "Deploy SL-ACME-006 to ACME SIT"
+   # Description: Include release notes and component list
+   ```
+
+4. **Review and Merge**
+   - Get peer review
+   - Verify release tag is correct
+   - Merge PR to trigger CI/CD pipeline
+
+5. **Monitor Deployment**
+   - Watch CI/CD pipeline logs
+   - Monitor Kubernetes pod status
+   - Check application logs
+   - Verify smoke tests pass
+
+6. **Verify Deployment**
+   ```bash
+   # Check pod status
+   kubectl get pods -n acme-sit
+   
+   # Check deployment status in database
+   SELECT * FROM env_deploy 
+   WHERE customer = 'ACME' AND environment = 'sit'
+   ORDER BY started_at DESC LIMIT 1;
+   ```
+
+7. **Post-Deployment**
+   - Run additional tests if needed
+   - Notify stakeholders of success
+   - Update deployment tracking dashboard
+   - Document any issues or notes
+
+**Expected Outcome:** Solution release successfully deployed to target environment.
+
+**Rollback:** See Section 15 for rollback procedures.
+
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 10. CI/CD Pipeline Integration
+
+### 10.1 Pipeline Overview
+
+The CI/CD pipeline is triggered automatically when a Pull Request is merged to an environment branch in the deployments repository.
+
+**Trigger:** Merge to `cust/<CUSTOMER>/<ENVIRONMENT>` branch
+
+**Pipeline Stages:**
+1. **Read Configuration** - Parse release.yaml
+2. **Validate Release** - Query database and verify release exists
+3. **Initialize Deployment** - Create env_deploy record
+4. **Deploy Components** - Deploy each microservice via Helm
+5. **Apply CRU Configurations** - Apply configuration data
+6. **Run Tests** - Execute smoke tests
+7. **Finalize** - Update deployment status and notify
+
+### 10.2 Pipeline Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    GIT WEBHOOK TRIGGER                      │
+│         (Merge to cust/ACME/sit branch)                     │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 1: Read Configuration                                │
+│  - Parse release.yaml                                       │
+│  - Extract solutionRelease tag                              │
+│  - Extract environment                                      │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 2: Validate Release                                  │
+│  - Query solution_release table                             │
+│  - Verify status is READY or LOCKED                         │
+│  - Load all component_release entries                       │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 3: Initialize Deployment                             │
+│  - Create env_deploy record (status: IN_PROGRESS)           │
+│  - Record pipeline job ID and URL                           │
+│  - Set started_at timestamp                                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 4: Deploy Components (Loop)                          │
+│  For each component_release:                                │
+│    - Checkout deploy_repo_url@deploy_ref_value              │
+│    - Load Helm chart from helm_chart_path                   │
+│    - Load values from helm_values_path                      │
+│    - Run: helm upgrade --install <release-name> \           │
+│           --set image.repository=<image-uri> \              │
+│           --values <values-file>                            │
+│    - Wait for pods to be ready                              │
+│    - Verify health checks                                   │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 5: Apply CRU Configurations                          │
+│  - Query configuration data by CRU tag                      │
+│  - Apply UI configurations                                  │
+│  - Apply workflow definitions                               │
+│  - Apply grid configurations                                │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 6: Run Smoke Tests                                   │
+│  - Health check endpoints                                   │
+│  - Basic functionality tests                                │
+│  - Configuration validation                                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  STAGE 7: Finalize Deployment                               │
+│  - Update env_deploy.status (SUCCESS/FAILED)                │
+│  - Set finished_at timestamp                                │
+│  - Calculate duration_seconds                               │
+│  - Send notifications (Slack, Email)                        │
+│  - Generate deployment report                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 10.3 Jenkins Pipeline Example (Jenkinsfile)
+
+```groovy
+pipeline {
+    agent any
+    
+    environment {
+        DEPLOYMENTS_REPO = 'https://github.com/visionwaves/deployments.git'
+        DB_HOST = credentials('db-host')
+        DB_USER = credentials('db-user')
+        DB_PASS = credentials('db-password')
+        KUBECONFIG = credentials('kubeconfig-sit')
+    }
+    
+    stages {
+        stage('Read Configuration') {
+            steps {
+                script {
+                    // Parse release.yaml
+                    def releaseConfig = readYaml file: "${env.BRANCH_NAME}/release.yaml"
+                    env.SOLUTION_RELEASE = releaseConfig.solutionRelease
+                    env.ENVIRONMENT = releaseConfig.environment
+                    env.CUSTOMER = env.BRANCH_NAME.split('/')[1]
+                    
+                    echo "Deploying ${env.SOLUTION_RELEASE} to ${env.CUSTOMER} ${env.ENVIRONMENT}"
+                }
+            }
+        }
+        
+        stage('Validate Release') {
+            steps {
+                script {
+                    // Query database for release details
+                    def query = """
+                        SELECT sr.id, sr.status, sr.cru_tag, sr.customer
+                        FROM solution_release sr
+                        WHERE sr.release_tag = '${env.SOLUTION_RELEASE}'
+                    """
+                    
+                    def release = sh(
+                        script: "psql -h ${DB_HOST} -U ${DB_USER} -d releases -t -c \"${query}\"",
+                        returnStdout: true
+                    ).trim()
+                    
+                    if (!release) {
+                        error("Release ${env.SOLUTION_RELEASE} not found in database")
+                    }
+                    
+                    def (releaseId, status, cruTag, customer) = release.split('\\|')
+                    
+                    if (status != 'READY' && status != 'LOCKED') {
+                        error("Release status is ${status}, must be READY or LOCKED")
+                    }
+                    
+                    env.RELEASE_ID = releaseId.trim()
+                    env.CRU_TAG = cruTag.trim()
+                    
+                    echo "Release validated: ID=${env.RELEASE_ID}, CRU=${env.CRU_TAG}"
+                }
+            }
+        }
+        
+        stage('Initialize Deployment') {
+            steps {
+                script {
+                    // Create env_deploy record
+                    def insertQuery = """
+                        INSERT INTO env_deploy (
+                            solution_release_id, customer, environment, status,
+                            deploy_repo_branch, release_yaml_commit, pipeline_job_id, pipeline_url,
+                            deployed_by
+                        ) VALUES (
+                            ${env.RELEASE_ID}, '${env.CUSTOMER}', '${env.ENVIRONMENT}', 'IN_PROGRESS',
+                            '${env.BRANCH_NAME}', '${env.GIT_COMMIT}', '${env.BUILD_TAG}', '${env.BUILD_URL}',
+                            '${env.BUILD_USER}'
+                        ) RETURNING id
+                    """
+                    
+                    env.DEPLOY_ID = sh(
+                        script: "psql -h ${DB_HOST} -U ${DB_USER} -d releases -t -c \"${insertQuery}\"",
+                        returnStdout: true
+                    ).trim()
+                    
+                    echo "Deployment initialized: ID=${env.DEPLOY_ID}"
+                }
+            }
+        }
+        
+        stage('Deploy Components') {
+            steps {
+                script {
+                    // Get all components for this release
+                    def componentsQuery = """
+                        SELECT component_key, image_uri, helm_chart_path, helm_values_path, helm_release_name
+                        FROM component_release
+                        WHERE solution_release_id = ${env.RELEASE_ID}
+                        ORDER BY component_key
+                    """
+                    
+                    def components = sh(
+                        script: "psql -h ${DB_HOST} -U ${DB_USER} -d releases -t -c \"${componentsQuery}\"",
+                        returnStdout: true
+                    ).trim().split('\n')
+                    
+                    for (component in components) {
+                        def (key, imageUri, chartPath, valuesPath, releaseName) = component.split('\\|')
+                        
+                        echo "Deploying component: ${key.trim()}"
+                        
+                        // Deploy with Helm
+                        sh """
+                            helm upgrade --install ${releaseName.trim()} \
+                                ${chartPath.trim()} \
+                                --set image.repository=${imageUri.trim().split(':')[0]} \
+                                --set image.tag=${imageUri.trim().split(':')[1]} \
+                                --values ${valuesPath.trim()} \
+                                --namespace ${env.CUSTOMER.toLowerCase()}-${env.ENVIRONMENT} \
+                                --create-namespace \
+                                --wait \
+                                --timeout 10m
+                        """
+                        
+                        echo "Component ${key.trim()} deployed successfully"
+                    }
+                }
+            }
+        }
+        
+        stage('Apply CRU Configurations') {
+            steps {
+                script {
+                    echo "Applying CRU configurations: ${env.CRU_TAG}"
+                    
+                    // Call configuration service API to apply CRU
+                    sh """
+                        curl -X POST http://config-service/api/cru/apply \
+                            -H "Content-Type: application/json" \
+                            -d '{"cruTag": "${env.CRU_TAG}", "environment": "${env.ENVIRONMENT}"}'
+                    """
+                    
+                    echo "CRU configurations applied successfully"
+                }
+            }
+        }
+        
+        stage('Run Smoke Tests') {
+            steps {
+                script {
+                    echo "Running smoke tests..."
+                    
+                    // Run smoke tests
+                    sh """
+                        ./scripts/smoke-tests.sh \
+                            --customer ${env.CUSTOMER} \
+                            --environment ${env.ENVIRONMENT} \
+                            --release ${env.SOLUTION_RELEASE}
+                    """
+                    
+                    echo "Smoke tests passed"
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            script {
+                // Update deployment status to SUCCESS
+                def updateQuery = """
+                    UPDATE env_deploy
+                    SET status = 'SUCCESS',
+                        finished_at = CURRENT_TIMESTAMP,
+                        duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))
+                    WHERE id = ${env.DEPLOY_ID}
+                """
+                
+                sh "psql -h ${DB_HOST} -U ${DB_USER} -d releases -c \"${updateQuery}\""
+                
+                // Send success notification
+                slackSend(
+                    color: 'good',
+                    message: "✅ Deployment SUCCESS: ${env.SOLUTION_RELEASE} to ${env.CUSTOMER} ${env.ENVIRONMENT}\nPipeline: ${env.BUILD_URL}"
+                )
+                
+                echo "Deployment completed successfully"
+            }
+        }
+        
+        failure {
+            script {
+                // Update deployment status to FAILED
+                def updateQuery = """
+                    UPDATE env_deploy
+                    SET status = 'FAILED',
+                        finished_at = CURRENT_TIMESTAMP,
+                        duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)),
+                        error_message = 'Pipeline failed at stage: ${env.STAGE_NAME}'
+                    WHERE id = ${env.DEPLOY_ID}
+                """
+                
+                sh "psql -h ${DB_HOST} -U ${DB_USER} -d releases -c \"${updateQuery}\""
+                
+                // Send failure notification
+                slackSend(
+                    color: 'danger',
+                    message: "❌ Deployment FAILED: ${env.SOLUTION_RELEASE} to ${env.CUSTOMER} ${env.ENVIRONMENT}\nStage: ${env.STAGE_NAME}\nPipeline: ${env.BUILD_URL}"
+                )
+                
+                echo "Deployment failed"
+            }
+        }
+    }
+}
+```
+
+### 10.4 GitLab CI Example (.gitlab-ci.yml)
+
+```yaml
+variables:
+  DB_HOST: $DB_HOST
+  DB_USER: $DB_USER
+  DB_PASS: $DB_PASSWORD
+
+stages:
+  - validate
+  - deploy
+  - test
+  - finalize
+
+read_configuration:
+  stage: validate
+  script:
+    - export SOLUTION_RELEASE=$(yq eval '.solutionRelease' $CI_COMMIT_REF_NAME/release.yaml)
+    - export ENVIRONMENT=$(yq eval '.environment' $CI_COMMIT_REF_NAME/release.yaml)
+    - export CUSTOMER=$(echo $CI_COMMIT_REF_NAME | cut -d'/' -f2)
+    - echo "SOLUTION_RELEASE=$SOLUTION_RELEASE" >> deploy.env
+    - echo "ENVIRONMENT=$ENVIRONMENT" >> deploy.env
+    - echo "CUSTOMER=$CUSTOMER" >> deploy.env
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+validate_release:
+  stage: validate
+  dependencies:
+    - read_configuration
+  script:
+    - |
+      RELEASE_DATA=$(psql -h $DB_HOST -U $DB_USER -d releases -t -c "
+        SELECT id, status, cru_tag FROM solution_release WHERE release_tag = '$SOLUTION_RELEASE'
+      ")
+      
+      if [ -z "$RELEASE_DATA" ]; then
+        echo "Release $SOLUTION_RELEASE not found"
+        exit 1
+      fi
+      
+      RELEASE_ID=$(echo $RELEASE_DATA | cut -d'|' -f1 | xargs)
+      STATUS=$(echo $RELEASE_DATA | cut -d'|' -f2 | xargs)
+      CRU_TAG=$(echo $RELEASE_DATA | cut -d'|' -f3 | xargs)
+      
+      if [ "$STATUS" != "READY" ] && [ "$STATUS" != "LOCKED" ]; then
+        echo "Release status is $STATUS, must be READY or LOCKED"
+        exit 1
+      fi
+      
+      echo "RELEASE_ID=$RELEASE_ID" >> deploy.env
+      echo "CRU_TAG=$CRU_TAG" >> deploy.env
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+initialize_deployment:
+  stage: deploy
+  dependencies:
+    - validate_release
+  script:
+    - |
+      DEPLOY_ID=$(psql -h $DB_HOST -U $DB_USER -d releases -t -c "
+        INSERT INTO env_deploy (
+          solution_release_id, customer, environment, status,
+          deploy_repo_branch, release_yaml_commit, pipeline_job_id, pipeline_url,
+          deployed_by
+        ) VALUES (
+          $RELEASE_ID, '$CUSTOMER', '$ENVIRONMENT', 'IN_PROGRESS',
+          '$CI_COMMIT_REF_NAME', '$CI_COMMIT_SHA', '$CI_PIPELINE_ID', '$CI_PIPELINE_URL',
+          '$GITLAB_USER_EMAIL'
+        ) RETURNING id
+      " | xargs)
+      
+      echo "DEPLOY_ID=$DEPLOY_ID" >> deploy.env
+  artifacts:
+    reports:
+      dotenv: deploy.env
+
+deploy_components:
+  stage: deploy
+  dependencies:
+    - initialize_deployment
+  script:
+    - |
+      psql -h $DB_HOST -U $DB_USER -d releases -t -c "
+        SELECT component_key, image_uri, helm_chart_path, helm_values_path, helm_release_name
+        FROM component_release
+        WHERE solution_release_id = $RELEASE_ID
+        ORDER BY component_key
+      " | while IFS='|' read -r key imageUri chartPath valuesPath releaseName; do
+        key=$(echo $key | xargs)
+        imageUri=$(echo $imageUri | xargs)
+        chartPath=$(echo $chartPath | xargs)
+        valuesPath=$(echo $valuesPath | xargs)
+        releaseName=$(echo $releaseName | xargs)
+        
+        echo "Deploying component: $key"
+        
+        helm upgrade --install $releaseName $chartPath \
+          --set image.repository=$(echo $imageUri | cut -d':' -f1) \
+          --set image.tag=$(echo $imageUri | cut -d':' -f2) \
+          --values $valuesPath \
+          --namespace ${CUSTOMER,,}-$ENVIRONMENT \
+          --create-namespace \
+          --wait \
+          --timeout 10m
+        
+        echo "Component $key deployed successfully"
+      done
+
+apply_cru:
+  stage: deploy
+  dependencies:
+    - deploy_components
+  script:
+    - |
+      curl -X POST http://config-service/api/cru/apply \
+        -H "Content-Type: application/json" \
+        -d "{\"cruTag\": \"$CRU_TAG\", \"environment\": \"$ENVIRONMENT\"}"
+
+smoke_tests:
+  stage: test
+  dependencies:
+    - apply_cru
+  script:
+    - ./scripts/smoke-tests.sh --customer $CUSTOMER --environment $ENVIRONMENT --release $SOLUTION_RELEASE
+
+finalize_success:
+  stage: finalize
+  dependencies:
+    - smoke_tests
+  when: on_success
+  script:
+    - |
+      psql -h $DB_HOST -U $DB_USER -d releases -c "
+        UPDATE env_deploy
+        SET status = 'SUCCESS',
+            finished_at = CURRENT_TIMESTAMP,
+            duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))
+        WHERE id = $DEPLOY_ID
+      "
+    - echo "✅ Deployment SUCCESS"
+
+finalize_failure:
+  stage: finalize
+  dependencies:
+    - smoke_tests
+  when: on_failure
+  script:
+    - |
+      psql -h $DB_HOST -U $DB_USER -d releases -c "
+        UPDATE env_deploy
+        SET status = 'FAILED',
+            finished_at = CURRENT_TIMESTAMP,
+            duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)),
+            error_message = 'Pipeline failed'
+        WHERE id = $DEPLOY_ID
+      "
+    - echo "❌ Deployment FAILED"
+```
+
+### 10.5 Pipeline Best Practices
+
+| Best Practice | Description | Benefit |
+|---------------|-------------|---------|
+| **Idempotent Deployments** | Use `helm upgrade --install` to make deployments repeatable | Can safely retry failed deployments |
+| **Atomic Operations** | Deploy all components or none (rollback on failure) | Prevents partial deployments |
+| **Health Checks** | Wait for pods to be ready before proceeding | Ensures components are actually running |
+| **Timeout Limits** | Set reasonable timeouts for each stage | Prevents hanging pipelines |
+| **Detailed Logging** | Log every step with timestamps | Easier troubleshooting |
+| **Database Tracking** | Record deployment status in database | Audit trail and monitoring |
+| **Notifications** | Send alerts on success/failure | Immediate awareness of issues |
+| **Rollback Capability** | Keep previous release info for quick rollback | Fast recovery from failures |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 11. Configuration Release Unit (CRU) Management
+
+### 11.1 CRU Concept
+
+A **Configuration Release Unit (CRU)** is a single tag that groups all UI, workflow, and grid configurations for a solution release.
+
+**Key Principles:**
+- ✅ **ONE CRU per solution release** - All components share the same CRU tag
+- ✅ **Immutable** - Once created, CRU configurations should not change
+- ✅ **Versioned** - CRU tags follow a sequential numbering scheme
+- ✅ **Customer-specific** - Each customer has their own CRU sequence
+
+### 11.2 CRU Naming Convention
+
+**Format:** `CUST-<TENANT>-R<NN>`
+
+**Examples:**
+- `CUST-ACME-R07` - ACME customer, release 7
+- `CUST-BETA-R12` - BETA customer, release 12
+- `CUST-GAMMA-R03` - GAMMA customer, release 3
+
+**Components:**
+- `CUST` - Prefix indicating customer-specific configuration
+- `<TENANT>` - Customer/tenant identifier (uppercase)
+- `R` - Release indicator
+- `<NN>` - Sequential release number (zero-padded to 2 digits)
+
+### 11.3 CRU Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. CREATE CRU                                              │
+│     - Assign new CRU tag                                    │
+│     - Initialize configuration records                      │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  2. POPULATE CRU                                            │
+│     - Add UI configurations                                 │
+│     - Add workflow definitions                              │
+│     - Add grid configurations                               │
+│     - Tag all with CRU                                      │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  3. VALIDATE CRU                                            │
+│     - Verify all configurations tagged                      │
+│     - Test configurations in SIT                            │
+│     - Validate completeness                                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  4. DEPLOY CRU                                              │
+│     - Apply configurations to environment                   │
+│     - Verify application                                    │
+│     - Test functionality                                    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  5. LOCK CRU                                                │
+│     - Mark as deployed to production                        │
+│     - Prevent modifications                                 │
+│     - Archive for historical reference                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 11.4 CRU Configuration Storage
+
+All configuration data should be tagged with the CRU tag for traceability.
+
+**Example Configuration Table:**
+
+```sql
+CREATE TABLE ui_configuration (
+  id BIGSERIAL PRIMARY KEY,
+  cru_tag VARCHAR(50) NOT NULL,
+  customer VARCHAR(100) NOT NULL,
+  config_type VARCHAR(50) NOT NULL,  -- 'form', 'grid', 'workflow', etc.
+  config_key VARCHAR(200) NOT NULL,
+  config_data JSONB NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_by VARCHAR(100),
+  
+  INDEX idx_cru_tag (cru_tag),
+  INDEX idx_customer (customer),
+  INDEX idx_config_type (config_type)
+);
+```
+
+**Example Configuration Records:**
+
+```sql
+-- Form configuration
+INSERT INTO ui_configuration (cru_tag, customer, config_type, config_key, config_data, created_by)
+VALUES (
+  'CUST-ACME-R07', 'ACME', 'form', 'employee_form',
+  '{"fields": [{"name": "firstName", "type": "text", "required": true}, ...]}',
+  'config.admin@visionwaves.com'
+);
+
+-- Grid configuration
+INSERT INTO ui_configuration (cru_tag, customer, config_type, config_key, config_data, created_by)
+VALUES (
+  'CUST-ACME-R07', 'ACME', 'grid', 'employee_grid',
+  '{"columns": [{"field": "firstName", "header": "First Name", "width": 150}, ...]}',
+  'config.admin@visionwaves.com'
+);
+
+-- Workflow configuration
+INSERT INTO ui_configuration (cru_tag, customer, config_type, config_key, config_data, created_by)
+VALUES (
+  'CUST-ACME-R07', 'ACME', 'workflow', 'approval_workflow',
+  '{"steps": [{"name": "submit", "action": "submit_for_approval"}, ...]}',
+  'config.admin@visionwaves.com'
+);
+```
+
+### 11.5 CRU Deployment Process
+
+**Step 1: Query Configurations by CRU Tag**
+
+```sql
+SELECT config_type, config_key, config_data
+FROM ui_configuration
+WHERE cru_tag = 'CUST-ACME-R07'
+ORDER BY config_type, config_key;
+```
+
+**Step 2: Apply Configurations via API**
+
+```bash
+#!/bin/bash
+
+CRU_TAG="CUST-ACME-R07"
+ENVIRONMENT="sit"
+CONFIG_SERVICE_URL="http://config-service/api"
+
+# Get all configurations for CRU
+CONFIGS=$(psql -h $DB_HOST -U $DB_USER -d releases -t -c "
+  SELECT config_type, config_key, config_data
+  FROM ui_configuration
+  WHERE cru_tag = '$CRU_TAG'
+")
+
+# Apply each configuration
+echo "$CONFIGS" | while IFS='|' read -r type key data; do
+  type=$(echo $type | xargs)
+  key=$(echo $key | xargs)
+  data=$(echo $data | xargs)
+  
+  echo "Applying $type configuration: $key"
+  
+  curl -X POST "$CONFIG_SERVICE_URL/config/apply" \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"cruTag\": \"$CRU_TAG\",
+      \"environment\": \"$ENVIRONMENT\",
+      \"configType\": \"$type\",
+      \"configKey\": \"$key\",
+      \"configData\": $data
+    }"
+done
+
+echo "All CRU configurations applied successfully"
+```
+
+### 11.6 CRU Best Practices
+
+| Best Practice | Description | Rationale |
+|---------------|-------------|-----------|
+| **One CRU per Release** | Each solution release has exactly one CRU | Simplifies tracking and deployment |
+| **Sequential Numbering** | CRU numbers increment sequentially | Easy to identify latest release |
+| **Immutable CRUs** | Never modify existing CRU configurations | Ensures reproducibility |
+| **Tag Everything** | All configs must be tagged with CRU | Complete traceability |
+| **Test Before Deploy** | Validate CRU in SIT before production | Catch configuration errors early |
+| **Document Changes** | Maintain changelog for each CRU | Understand what changed |
+| **Version Control** | Store CRU configs in git if possible | Additional backup and history |
+
+### 11.7 CRU Validation Checklist
+
+Before deploying a CRU, verify:
+
+- [ ] All UI forms are configured and tagged
+- [ ] All grids are configured and tagged
+- [ ] All workflows are configured and tagged
+- [ ] All menu items are configured and tagged
+- [ ] All permissions are configured and tagged
+- [ ] Configurations tested in SIT environment
+- [ ] No orphaned configurations (missing CRU tag)
+- [ ] CRU tag matches solution release CRU tag
+- [ ] Configuration data is valid JSON/format
+- [ ] No duplicate configuration keys
+
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 12. Deployment Promotion Strategy
+
+### 12.1 Environment Progression
+
+Deployments follow a strict progression through environments:
+
+```
+SIT ──────► PreProd ──────► Production
+ │            │                │
+ │            │                │
+ ▼            ▼                ▼
+Daily      Weekly          Monthly
+Testing    Staging         Live
+```
+
+**Environment Characteristics:**
+
+| Environment | Purpose | Deployment Frequency | Approval Required | Rollback Window |
+|-------------|---------|---------------------|-------------------|-----------------|
+| **SIT** (System Integration Testing) | Development testing, integration validation | Daily / On-demand | No | Immediate |
+| **PreProd** (Pre-Production) | Staging, UAT, performance testing | Weekly | Yes (Release Manager) | 24 hours |
+| **Production** | Live customer environment | Monthly / As needed | Yes (Customer + RM) | 48 hours |
+
+### 12.2 Promotion Process
+
+#### SIT → PreProd Promotion
+
+**Prerequisites:**
+- [ ] Solution release deployed successfully to SIT
+- [ ] All smoke tests passed in SIT
+- [ ] Integration tests passed
+- [ ] No critical bugs identified
+- [ ] Minimum 3 days of stable operation in SIT
+
+**Process:**
+
+1. **Verify SIT Deployment**
+   ```sql
+   SELECT * FROM env_deploy
+   WHERE customer = 'ACME' AND environment = 'sit'
+   AND solution_release_id = (SELECT id FROM solution_release WHERE release_tag = 'SL-ACME-006')
+   AND status = 'SUCCESS'
+   ORDER BY started_at DESC LIMIT 1;
+   ```
+
+2. **Update PreProd release.yaml**
+   ```bash
+   git checkout cust/ACME/preprod
+   cat > cust/ACME/preprod/release.yaml << 'YAML'
+   solutionRelease: "SL-ACME-006"
+   environment: "preprod"
+   YAML
+   git add cust/ACME/preprod/release.yaml
+   git commit -m "Promote SL-ACME-006 to ACME PreProd"
+   git push origin cust/ACME/preprod
+   ```
+
+3. **Create Pull Request**
+   - Title: "Promote SL-ACME-006 to ACME PreProd"
+   - Description: Include SIT test results and approval
+   - Reviewers: Release Manager, DevOps Lead
+
+4. **Approval and Merge**
+   - Release Manager reviews and approves
+   - Merge triggers CI/CD pipeline
+   - Monitor deployment
+
+5. **Post-Deployment Validation**
+   - Run UAT test suite
+   - Performance testing
+   - Security scanning
+   - Stakeholder sign-off
+
+#### PreProd → Production Promotion
+
+**Prerequisites:**
+- [ ] Solution release deployed successfully to PreProd
+- [ ] All UAT tests passed
+- [ ] Performance benchmarks met
+- [ ] Security scan passed
+- [ ] Customer approval obtained
+- [ ] Deployment window scheduled
+- [ ] Rollback plan prepared
+- [ ] Minimum 1 week of stable operation in PreProd
+
+**Process:**
+
+1. **Pre-Production Checklist**
+   - [ ] Backup production database
+   - [ ] Verify rollback procedure
+   - [ ] Notify all stakeholders
+   - [ ] Schedule deployment window
+   - [ ] Prepare communication plan
+   - [ ] Ensure on-call support available
+
+2. **Update Production release.yaml**
+   ```bash
+   git checkout cust/ACME/prod
+   cat > cust/ACME/prod/release.yaml << 'YAML'
+   solutionRelease: "SL-ACME-006"
+   environment: "prod"
+   YAML
+   git add cust/ACME/prod/release.yaml
+   git commit -m "Promote SL-ACME-006 to ACME Production
+   
+   Approvals:
+   - Release Manager: John Doe
+   - Customer: Jane Smith (ACME)
+   - DevOps Lead: Bob Johnson
+   
+   Deployment Window: 2025-11-15 02:00-04:00 UTC
+   "
+   git push origin cust/ACME/prod
+   ```
+
+3. **Create Pull Request**
+   - Title: "Promote SL-ACME-006 to ACME Production"
+   - Description: Include all approvals and test results
+   - Reviewers: Release Manager, DevOps Lead, Customer Representative
+
+4. **Final Approval and Merge**
+   - All reviewers approve
+   - Merge during scheduled deployment window
+   - Monitor deployment closely
+
+5. **Post-Deployment Validation**
+   - Verify all services are running
+   - Run production smoke tests
+   - Monitor application metrics
+   - Check error logs
+   - Verify customer access
+   - Send deployment success notification
+
+6. **Lock Release**
+   ```sql
+   UPDATE solution_release
+   SET status = 'LOCKED',
+       updated_at = CURRENT_TIMESTAMP,
+       updated_by = 'rm@visionwaves.com'
+   WHERE release_tag = 'SL-ACME-006';
+   ```
+
+### 12.3 Promotion Approval Matrix
+
+| Environment | Approvers Required | Approval Type |
+|-------------|-------------------|---------------|
+| **SIT** | None | Automatic |
+| **PreProd** | Release Manager | Manual (PR approval) |
+| **Production** | Release Manager + Customer Representative + DevOps Lead | Manual (PR approval + sign-off) |
+
+### 12.4 Deployment Windows
+
+**SIT:**
+- Available: 24/7
+- No restrictions
+
+**PreProd:**
+- Preferred: Tuesday-Thursday, 10:00-16:00 UTC
+- Avoid: Fridays, weekends, holidays
+
+**Production:**
+- Preferred: Tuesday-Wednesday, 02:00-04:00 UTC (low traffic)
+- Blackout periods: Month-end, quarter-end, major holidays
+- Advance notice: Minimum 1 week
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 13. Monitoring & Reporting
+
+### 13.1 Deployment Dashboards
+
+#### Dashboard 1: Deployment Status Overview
+
+**Metrics:**
+- Current release per environment per customer
+- Deployment success rate (last 30 days)
+- Average deployment duration
+- Failed deployments (last 7 days)
+- Pending deployments
+
+**SQL Query:**
+```sql
+-- Current release per environment
+SELECT DISTINCT ON (customer, environment)
+  customer,
+  environment,
+  sr.release_tag,
+  sr.cru_tag,
+  ed.status,
+  ed.started_at,
+  ed.deployed_by
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+ORDER BY customer, environment, started_at DESC;
+```
+
+#### Dashboard 2: Release History
+
+**Metrics:**
+- All releases for a customer
+- Components per release
+- Deployment timeline
+- Release status
+
+**SQL Query:**
+```sql
+-- Release history for customer
+SELECT 
+  sr.release_tag,
+  sr.cru_tag,
+  sr.product_version,
+  sr.customer_version,
+  sr.status,
+  sr.created_at,
+  COUNT(cr.id) as component_count,
+  COUNT(ed.id) as deployment_count
+FROM solution_release sr
+LEFT JOIN component_release cr ON sr.id = cr.solution_release_id
+LEFT JOIN env_deploy ed ON sr.id = ed.solution_release_id
+WHERE sr.customer = 'ACME'
+GROUP BY sr.id
+ORDER BY sr.created_at DESC;
+```
+
+#### Dashboard 3: Component Tracking
+
+**Metrics:**
+- Component versions across environments
+- Customized vs. product components
+- Component deployment frequency
+
+**SQL Query:**
+```sql
+-- Component versions across environments
+SELECT 
+  cr.component_key,
+  cr.is_customized,
+  cr.code_ref_value as version,
+  sr.customer,
+  ed.environment,
+  ed.started_at as deployed_at
+FROM component_release cr
+JOIN solution_release sr ON cr.solution_release_id = sr.id
+JOIN env_deploy ed ON sr.id = ed.solution_release_id
+WHERE sr.customer = 'ACME'
+AND ed.status = 'SUCCESS'
+ORDER BY cr.component_key, ed.environment, ed.started_at DESC;
+```
+
+### 13.2 Deployment Metrics
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| **Deployment Success Rate** | > 95% | (Successful deployments / Total deployments) × 100 |
+| **Mean Time to Deploy (MTTD)** | < 30 minutes | Average duration from pipeline start to success |
+| **Mean Time to Recovery (MTTR)** | < 15 minutes | Average time to rollback from failed deployment |
+| **Deployment Frequency** | SIT: Daily, PreProd: Weekly, Prod: Monthly | Number of deployments per time period |
+| **Change Failure Rate** | < 5% | (Failed deployments / Total deployments) × 100 |
+| **Rollback Rate** | < 2% | (Rollbacks / Total deployments) × 100 |
+
+**SQL Queries for Metrics:**
+
+```sql
+-- Deployment Success Rate (last 30 days)
+SELECT 
+  customer,
+  environment,
+  COUNT(*) as total_deployments,
+  SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as successful_deployments,
+  ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate
+FROM env_deploy
+WHERE started_at >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY customer, environment
+ORDER BY customer, environment;
+
+-- Mean Time to Deploy (last 30 days)
+SELECT 
+  customer,
+  environment,
+  ROUND(AVG(duration_seconds) / 60, 2) as avg_deploy_time_minutes
+FROM env_deploy
+WHERE started_at >= CURRENT_DATE - INTERVAL '30 days'
+AND status = 'SUCCESS'
+GROUP BY customer, environment
+ORDER BY customer, environment;
+
+-- Failed Deployments (last 7 days)
+SELECT 
+  sr.release_tag,
+  ed.customer,
+  ed.environment,
+  ed.started_at,
+  ed.error_message,
+  ed.deployed_by
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+WHERE ed.status = 'FAILED'
+AND ed.started_at >= CURRENT_DATE - INTERVAL '7 days'
+ORDER BY ed.started_at DESC;
+```
+
+### 13.3 Alerting & Notifications
+
+#### Alert Triggers
+
+| Alert | Condition | Severity | Recipients |
+|-------|-----------|----------|------------|
+| **Deployment Failed** | env_deploy.status = 'FAILED' | High | DevOps team, Release Manager |
+| **Deployment Timeout** | duration_seconds > 3600 (1 hour) | Medium | DevOps team |
+| **Rollback Executed** | env_deploy.status = 'ROLLED_BACK' | High | DevOps team, Release Manager, Customer |
+| **Production Deployment** | environment = 'prod' AND status = 'SUCCESS' | Info | All stakeholders |
+| **Low Success Rate** | Success rate < 90% (last 7 days) | Medium | Release Manager, DevOps Lead |
+
+#### Notification Channels
+
+- **Slack:** Real-time deployment notifications
+- **Email:** Deployment summaries, failure alerts
+- **Dashboard:** Visual status updates
+- **Ticketing System:** Auto-create tickets for failures
+
+#### Slack Notification Example
+
+```bash
+#!/bin/bash
+
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+send_slack_notification() {
+  local status=$1
+  local release=$2
+  local customer=$3
+  local environment=$4
+  local pipeline_url=$5
+  
+  local color="good"
+  local emoji="✅"
+  
+  if [ "$status" = "FAILED" ]; then
+    color="danger"
+    emoji="❌"
+  elif [ "$status" = "IN_PROGRESS" ]; then
+    color="warning"
+    emoji="🔄"
+  fi
+  
+  curl -X POST $SLACK_WEBHOOK_URL \
+    -H 'Content-Type: application/json' \
+    -d "{
+      \"attachments\": [{
+        \"color\": \"$color\",
+        \"title\": \"$emoji Deployment $status\",
+        \"fields\": [
+          {\"title\": \"Release\", \"value\": \"$release\", \"short\": true},
+          {\"title\": \"Customer\", \"value\": \"$customer\", \"short\": true},
+          {\"title\": \"Environment\", \"value\": \"$environment\", \"short\": true},
+          {\"title\": \"Status\", \"value\": \"$status\", \"short\": true}
+        ],
+        \"actions\": [{
+          \"type\": \"button\",
+          \"text\": \"View Pipeline\",
+          \"url\": \"$pipeline_url\"
+        }]
+      }]
+    }"
+}
+
+# Usage
+send_slack_notification "SUCCESS" "SL-ACME-006" "ACME" "sit" "https://jenkins.example.com/job/142"
+```
+
+### 13.4 Deployment Reports
+
+#### Weekly Deployment Report
+
+**Contents:**
+- Summary of all deployments
+- Success/failure breakdown
+- Average deployment time
+- Issues and resolutions
+- Upcoming deployments
+
+**SQL Query:**
+```sql
+-- Weekly deployment summary
+SELECT 
+  ed.customer,
+  ed.environment,
+  COUNT(*) as total_deployments,
+  SUM(CASE WHEN ed.status = 'SUCCESS' THEN 1 ELSE 0 END) as successful,
+  SUM(CASE WHEN ed.status = 'FAILED' THEN 1 ELSE 0 END) as failed,
+  ROUND(AVG(ed.duration_seconds) / 60, 2) as avg_duration_minutes,
+  STRING_AGG(DISTINCT sr.release_tag, ', ') as releases_deployed
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+WHERE ed.started_at >= CURRENT_DATE - INTERVAL '7 days'
+GROUP BY ed.customer, ed.environment
+ORDER BY ed.customer, ed.environment;
+```
+
+#### Monthly Release Report
+
+**Contents:**
+- All releases created
+- Components per release
+- Deployment status per environment
+- Customer-specific customizations
+- Trends and insights
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 14. Naming Conventions & Standards
+
+### 14.1 Naming Convention Summary
+
+| Artifact | Format | Example |
+|----------|--------|---------|
+| **Solution Release Tag** | `SL-<CUSTOMER>-<NNN>` | `SL-ACME-006` |
+| **CRU Tag** | `CUST-<TENANT>-R<NN>` | `CUST-ACME-R07` |
+| **Docker Image** | `<service>:<customerVer>-<CRU>` | `lcm:2.3.0-CUST-ACME-R07` |
+| **Customer Repo Branch** | `<product>-<tenant>-<version>` | `lcm-acme-2.3.0` |
+| **Environment Branch** | `cust/<TENANT>/<env>` | `cust/ACME/sit` |
+| **Helm Release Name** | `<tenant>-<service>` | `acme-lcm` |
+| **Kubernetes Namespace** | `<tenant>-<env>` | `acme-sit` |
+| **Product Version** | `v<major>.<minor>.<patch>` | `v1.12.3` |
+| **Customer Version** | `<major>.<minor>.<patch>` | `2.3.0` |
+
+### 14.2 Detailed Naming Rules
+
+#### Solution Release Tag
+
+**Format:** `SL-<CUSTOMER>-<NNN>`
+
+**Rules:**
+- Prefix: `SL` (Solution)
+- Customer: Uppercase, 3-10 characters
+- Number: Zero-padded to 3 digits, sequential
+
+**Examples:**
+- `SL-ACME-001` - First release for ACME
+- `SL-ACME-006` - Sixth release for ACME
+- `SL-BETA-012` - Twelfth release for BETA
+
+#### CRU Tag
+
+**Format:** `CUST-<TENANT>-R<NN>`
+
+**Rules:**
+- Prefix: `CUST` (Customer)
+- Tenant: Uppercase, matches customer name
+- Release: `R` followed by zero-padded 2-digit number
+
+**Examples:**
+- `CUST-ACME-R01` - First CRU for ACME
+- `CUST-ACME-R07` - Seventh CRU for ACME
+- `CUST-BETA-R15` - Fifteenth CRU for BETA
+
+#### Docker Image Tag
+
+**Format:** `<service>:<customerVer>-<CRU>`
+
+**Rules:**
+- Service: Lowercase, matches component key
+- Customer Version: Semantic version
+- CRU: Full CRU tag
+
+**Examples:**
+- `lcm:2.3.0-CUST-ACME-R07`
+- `identity:2.3.0-CUST-ACME-R07`
+- `scheduler:2.3.0-CUST-ACME-R07`
+
+#### Git Branch Names
+
+**Customer Repo Branch:** `<product>-<tenant>-<version>`
+
+**Examples:**
+- `lcm-acme-2.3.0`
+- `identity-beta-1.5.2`
+
+**Environment Branch:** `cust/<TENANT>/<env>`
+
+**Examples:**
+- `cust/ACME/sit`
+- `cust/ACME/preprod`
+- `cust/ACME/prod`
+
+### 14.3 Version Numbering
+
+#### Product Version (Semantic Versioning)
+
+**Format:** `v<major>.<minor>.<patch>`
+
+**Rules:**
+- Major: Breaking changes
+- Minor: New features, backward compatible
+- Patch: Bug fixes, backward compatible
+
+**Examples:**
+- `v1.12.3` - Version 1, minor 12, patch 3
+- `v2.0.0` - Major version 2 (breaking changes)
+
+#### Customer Version
+
+**Format:** `<major>.<minor>.<patch>`
+
+**Rules:**
+- Starts from customer's initial version
+- Increments independently from product version
+- Includes customizations
+
+**Examples:**
+- `2.3.0` - Customer version 2.3.0
+- `2.3.1` - Patch release for customer
+
+### 14.4 File and Directory Naming
+
+**Helm Chart Directory:** `helm/charts/<service>`
+
+**Examples:**
+- `helm/charts/lcm`
+- `helm/charts/identity`
+
+**Helm Values File:** `helm/values/<CUSTOMER>/<env>/<service>.values.yaml`
+
+**Examples:**
+- `helm/values/ACME/sit/lcm.values.yaml`
+- `helm/values/ACME/prod/identity.values.yaml`
+
+**Release Pointer File:** `cust/<CUSTOMER>/<env>/release.yaml`
+
+**Examples:**
+- `cust/ACME/sit/release.yaml`
+- `cust/BETA/prod/release.yaml`
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 15. Rollback & Recovery Procedures
+
+### 15.1 Rollback Strategy
+
+**Principle:** Always maintain the ability to quickly rollback to the previous stable release.
+
+**Rollback Triggers:**
+- Deployment failure
+- Critical bugs discovered post-deployment
+- Performance degradation
+- Customer request
+- Security vulnerability
+
+### 15.2 Rollback Process
+
+#### Step 1: Identify Previous Release
+
+```sql
+-- Get previous successful deployment
+SELECT 
+  sr.release_tag,
+  ed.started_at,
+  ed.deployed_by
+FROM env_deploy ed
+JOIN solution_release sr ON ed.solution_release_id = sr.id
+WHERE ed.customer = 'ACME'
+AND ed.environment = 'sit'
+AND ed.status = 'SUCCESS'
+ORDER BY ed.started_at DESC
+LIMIT 2;  -- Current and previous
+```
+
+#### Step 2: Update release.yaml to Previous Release
+
+```bash
+# Checkout environment branch
+git checkout cust/ACME/sit
+
+# Update to previous release
+cat > cust/ACME/sit/release.yaml << 'YAML'
+solutionRelease: "SL-ACME-005"  # Previous release
+environment: "sit"
+YAML
+
+# Commit and push
+git add cust/ACME/sit/release.yaml
+git commit -m "ROLLBACK: Revert to SL-ACME-005 in ACME SIT
+
+Reason: Critical bug in SL-ACME-006
+Approved by: Release Manager
+"
+git push origin cust/ACME/sit
+```
+
+#### Step 3: Create Rollback PR
+
+- Title: "ROLLBACK: Revert to SL-ACME-005 in ACME SIT"
+- Description: Include reason and approval
+- Priority: High
+- Fast-track approval process
+
+#### Step 4: Monitor Rollback Deployment
+
+- CI/CD pipeline deploys previous release
+- Verify all components rollback successfully
+- Run smoke tests
+- Verify functionality
+
+#### Step 5: Record Rollback
+
+```sql
+-- Rollback is recorded automatically by CI/CD pipeline
+-- Status will be 'ROLLED_BACK' for failed deployment
+-- New deployment record created for rollback with status 'SUCCESS'
+```
+
+### 15.3 Rollback Time Targets
+
+| Environment | Target Rollback Time | Maximum Downtime |
+|-------------|---------------------|------------------|
+| **SIT** | < 10 minutes | 15 minutes |
+| **PreProd** | < 15 minutes | 30 minutes |
+| **Production** | < 15 minutes | 30 minutes |
+
+### 15.4 Emergency Rollback Procedure
+
+For critical production issues requiring immediate rollback:
+
+1. **Declare Incident**
+   - Notify all stakeholders
+   - Activate incident response team
+   - Document issue
+
+2. **Fast-Track Rollback**
+   - Skip normal PR review process
+   - Direct commit to production branch (with approval)
+   - Immediate deployment
+
+3. **Verify Rollback**
+   - Confirm services are stable
+   - Verify customer access
+   - Monitor metrics
+
+4. **Post-Incident**
+   - Root cause analysis
+   - Document lessons learned
+   - Update procedures if needed
+
+### 15.5 Rollback Checklist
+
+**Pre-Rollback:**
+- [ ] Identify root cause of issue
+- [ ] Determine previous stable release
+- [ ] Verify previous release is available
+- [ ] Notify stakeholders
+- [ ] Get approval from Release Manager
+- [ ] Prepare rollback communication
+
+**During Rollback:**
+- [ ] Update release.yaml to previous release
+- [ ] Create and merge rollback PR
+- [ ] Monitor CI/CD pipeline
+- [ ] Verify component deployments
+- [ ] Run smoke tests
+- [ ] Check application logs
+
+**Post-Rollback:**
+- [ ] Verify system stability
+- [ ] Notify stakeholders of completion
+- [ ] Document rollback reason
+- [ ] Create ticket for issue resolution
+- [ ] Schedule post-mortem meeting
+- [ ] Update deployment records
+
+### 15.6 Prevention Strategies
+
+To minimize the need for rollbacks:
+
+| Strategy | Description | Impact |
+|----------|-------------|--------|
+| **Comprehensive Testing** | Test thoroughly in SIT and PreProd | Catch issues before production |
+| **Gradual Rollout** | Deploy to SIT → PreProd → Prod | Validate at each stage |
+| **Feature Flags** | Use feature toggles for new functionality | Disable features without rollback |
+| **Canary Deployments** | Deploy to subset of users first | Limit blast radius |
+| **Automated Tests** | Run automated test suites | Catch regressions early |
+| **Monitoring** | Comprehensive monitoring and alerting | Detect issues quickly |
+| **Rollback Drills** | Practice rollback procedures regularly | Ensure team readiness |
+
+<div style="page-break-after: always;"></div>
+
+---
+
+## 16. Appendices
+
+### Appendix A: Quick Reference Guide
+
+**Create Solution Release:**
+```sql
+INSERT INTO solution_release (solution_key, release_tag, customer, cru_tag, product_version, customer_version, status, created_by)
+VALUES ('HumainOS-Core', 'SL-ACME-006', 'ACME', 'CUST-ACME-R07', '1.12.3', '2.3.0', 'DRAFT', 'rm@visionwaves.com');
+```
+
+**Add Component:**
+```sql
+INSERT INTO component_release (solution_release_id, component_key, is_customized, code_repo_url, code_ref_type, code_ref_value, image_uri, deploy_repo_url, deploy_ref_type, deploy_ref_value, helm_chart_path, helm_values_path, helm_release_name)
+VALUES (1, 'lcm', true, 'https://github.com/visionwaves/customer-acme-lcm', 'tag', 'lcm-acme-2.3.0', 'registry.visionwaves.com/lcm:2.3.0-CUST-ACME-R07', 'https://github.com/visionwaves/deployments', 'branch', 'cust/ACME/sit', 'helm/charts/lcm', 'helm/values/ACME/sit/lcm.values.yaml', 'acme-lcm');
+```
+
+**Deploy Release:**
+```bash
+git checkout cust/ACME/sit
+echo "solutionRelease: \"SL-ACME-006\"" > cust/ACME/sit/release.yaml
+echo "environment: \"sit\"" >> cust/ACME/sit/release.yaml
+git add cust/ACME/sit/release.yaml
+git commit -m "Deploy SL-ACME-006 to ACME SIT"
+git push origin cust/ACME/sit
+```
+
+**Rollback:**
+```bash
+git checkout cust/ACME/sit
+echo "solutionRelease: \"SL-ACME-005\"" > cust/ACME/sit/release.yaml
+echo "environment: \"sit\"" >> cust/ACME/sit/release.yaml
+git add cust/ACME/sit/release.yaml
+git commit -m "ROLLBACK: Revert to SL-ACME-005"
+git push origin cust/ACME/sit
+```
+
+### Appendix B: Glossary
+
+| Term | Definition |
+|------|------------|
+| **Atomic Deployment** | All components deploy together or none deploy |
+| **Canary Deployment** | Gradual rollout to subset of users |
+| **CRU** | Configuration Release Unit - tagged configuration bundle |
+| **Helm** | Kubernetes package manager |
+| **Idempotent** | Operation that produces same result when repeated |
+| **Rollback** | Reverting to previous stable release |
+| **Smoke Test** | Basic functionality test after deployment |
+| **UAT** | User Acceptance Testing |
+
+### Appendix C: Contact Information
+
+| Role | Contact | Email | Slack |
+|------|---------|-------|-------|
+| **Release Manager** | John Doe | rm@visionwaves.com | @john.doe |
+| **DevOps Lead** | Bob Johnson | devops@visionwaves.com | @bob.johnson |
+| **LCM Product Owner** | Alice Smith | lcm.owner@visionwaves.com | @alice.smith |
+| **Identity Product Owner** | Charlie Brown | identity.owner@visionwaves.com | @charlie.brown |
+| **Support Team** | Support | support@visionwaves.com | #support |
+
+### Appendix D: Related Documents
+
+- **Testing Strategy** - QA/Testing-Strategy.md
+- **Infrastructure Guide** - DevOps/Infrastructure-Guide.md
+- **Security Procedures** - Security/Security-Procedures.md
+- **Incident Response** - Operations/Incident-Response.md
+- **Customer Onboarding** - Customer-Success/Onboarding-Guide.md
+
+### Appendix E: Revision History
+
+| Version | Date | Author | Changes |
+|---------|------|--------|---------|
+| 1.0 | 2025-11-09 | Visionwaves Engineering | Initial release |
+
+---
+
+**Document End**
+
+For questions or feedback, please contact: release-management@visionwaves.com
+
